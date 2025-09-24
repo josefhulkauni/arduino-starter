@@ -37,7 +37,6 @@ LiquidCrystal_I2C lcd(0x27, 16, 2); // Změňte 0x27 na vaši I2C adresu, pokud 
 enum ProgramState {
   STATE_NONE,
   STATE_SETUP,
-  STATE_WAITING_TO_START,
   STATE_COUNTDOWN,
   STATE_PAUSED
 };
@@ -50,16 +49,27 @@ unsigned long pauseMillis;
 unsigned long remaining;
 static unsigned long lastDisplayedRemaining = -1;
 
+// --- NOVÉ KONSTANTY ---
+const unsigned long DEFAULT_INTERVAL = 10; // Výchozí interval v sekundách
+const unsigned long ONE_SECOND = 1000;
+const unsigned long SHORT_BEEP_DURATION = 100;
+const unsigned long RED_LED_DURATION = 200;
+const unsigned long GREEN_LED_DURATION = 1000;
+const unsigned long SHORT_BEEP_FREQ = 1000;
+const unsigned long LONG_BEEP_FREQ = 1500;
+const unsigned long LONG_BEEP_DURATION = 500;
+const unsigned long START_SEQUENCE_SECONDS = 5; // Počet sekund startovací sekvence (nastavitelná)
+
+// --- NOVÉ PROMĚNNÉ ---
+unsigned long lastSecondUpdate = 0;
+unsigned long lastMillis = 0;
+bool timerRunning = false;
+
 bool isFirstStart = true;
 String inputString = "";
 
 // Prototypes pro funkce
-void playStartSignal();
 void updateDisplay();
-void handleSetupState();
-void handleWaitingState();
-void handleCountdownState();
-void handlePausedState();
 
 //--------------------- Hlavní funkce ---------------------
 
@@ -68,15 +78,20 @@ void setup()
   Serial.begin(9600);
   lcd.init();
   lcd.backlight();
-  
+
   pinMode(startPin, INPUT_PULLUP);
   pinMode(stopPin, INPUT_PULLUP);
   pinMode(pausePin, INPUT_PULLUP);
-  
+
   pinMode(ledRedPin, OUTPUT);
   pinMode(ledGreenPin, OUTPUT);
-  
-  // Zobrazí úvodní obrazovku
+
+  intervalInSeconds = DEFAULT_INTERVAL;
+  currentState = STATE_SETUP;
+  lastState = STATE_NONE;
+  timerRunning = false;
+  inputString = "";
+
   lcd.setCursor(0, 0);
   lcd.print("Nastav interval");
   lcd.setCursor(0, 1);
@@ -87,165 +102,155 @@ void setup()
 
 void loop()
 {
-  /*
-    // Digitální pin je ve stavu LOW, když je tlačítko stisknuto
-  if (digitalRead(startPin) == LOW) {
-    // Snížíte šum (debounce) při stisku
-    delay(50); 
-    
-    // Zobrazí text po stisku
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Tlacitko START");
-    lcd.setCursor(0, 1);
-    lcd.print("stisknuto!");
-  } else {
-    // Pokud tlačítko není stisknuto, zobrazí původní text
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Test tlacitka");
-    lcd.setCursor(0, 1);
-    lcd.print("Stiskni START");
-  }
-  */
+  // --- OVLÁDÁNÍ TLAČÍTEK ---
+  char key = keypad.getKey();
+  bool startPressed = digitalRead(startPin) == LOW;
+  bool stopPressed = digitalRead(stopPin) == LOW;
+  bool pausePressed = digitalRead(pausePin) == LOW;
+
   switch (currentState) {
     case STATE_SETUP:
-      handleSetupState();
-      break;
-    case STATE_WAITING_TO_START:
-      handleWaitingState();
-      break;
-    case STATE_COUNTDOWN:
-      handleCountdownState();
+      handleSetupState(key, startPressed, stopPressed);
       break;
     case STATE_PAUSED:
-      handlePausedState();
+      handlePausedState(pausePressed, stopPressed);
       break;
-  }
-  
-}
-
-//--------------------- Obsluha stavů ---------------------
-
-void handleSetupState() {
-  char key = keypad.getKey();
-  
-  if (key != NO_KEY && isdigit(key)) {
-    inputString += key;
-    lcd.setCursor(0, 1);
-    lcd.print("                "); // Vyčistí řádek
-    lcd.setCursor(0, 1);
-    lcd.print(inputString);
-  }
-  
-  // Stisk klávesy '#' potvrdí nastavený interval
-  if (key == '#' || millis() > 5000) {
-    if (inputString.length() > 0) {
-      intervalInSeconds = inputString.toInt();
-      inputString = "";
-    }
-    currentState = STATE_WAITING_TO_START;
-    updateDisplay();
-  }
-}
-
-void handleWaitingState() {
-  if (digitalRead(startPin) == LOW) { // Tlačítko START stisknuto
-    delay(200); // Debounce
-    
-    // Pro první spuštění startuje hned
-    if(isFirstStart) {
-      isFirstStart = false;
-    }
-      playStartSignal();
-      startMillis = millis();
-      currentState = STATE_COUNTDOWN;
-    
-    updateDisplay();
-  }
-}
-
-void handleCountdownState() {
-  Serial.println("Vstup do stavu: COUNTDOWN");
-  unsigned long elapsed = (millis() - startMillis) / 1000;
-  remaining = intervalInSeconds - elapsed;
-  
-  // Vypisuje uplynulý a zbývající čas
-  Serial.print(millis());
-  Serial.print("Uplynuly cas: ");
-  Serial.print(elapsed);
-  Serial.print("s, Zbyvajici cas: ");
-  Serial.print(remaining);
-  Serial.println("s");
-  
-  if (remaining > 0) {
-    updateDisplay();
-  } else {
-    // Odpočet dokončen, přehraje signál
-    playStartSignal();
-    // Resetuje pro další odpočet
-    startMillis = millis(); 
-    isFirstStart = false;
-  }
-  
-  // Kontrola tlačítek
-  if (digitalRead(pausePin) == LOW) {
-    delay(200);
-    pauseMillis = millis();
-    currentState = STATE_PAUSED;
-    updateDisplay();
-  }
-  
-  if (digitalRead(stopPin) == LOW) {
-    delay(200);
-    currentState = STATE_SETUP;
-    isFirstStart = true;
-    updateDisplay();
-  }
-}
-
-void handlePausedState() {
-  if (digitalRead(pausePin) == LOW) {
-    delay(200);
-    // Vypočte uplynulý čas od pauzy a aktualizuje startMillis
-    startMillis += (millis() - pauseMillis);
-    currentState = STATE_COUNTDOWN;
-    updateDisplay();
-  }
-  
-  if (digitalRead(stopPin) == LOW) {
-    delay(200);
-    currentState = STATE_SETUP;
-    isFirstStart = true;
-    updateDisplay();
+    case STATE_COUNTDOWN:
+      if (timerRunning) {
+        handleCountdownState(pausePressed, stopPressed);
+      }
+      break;
+    default:
+      break;
   }
 }
 
 //--------------------- Pomocné funkce ---------------------
 
-void playStartSignal() {
-  // Čtyři krátká pípnutí
-  for (int i = 0; i < 4; i++) {
-    digitalWrite(ledRedPin, HIGH); 
-    tone(buzzerPin, 1000, 100);
-    delay(100);
-    digitalWrite(ledRedPin, LOW); 
-    delay(800);
-  }
-  // Jedno dlouhé pípnutí
-    digitalWrite(ledGreenPin, HIGH); 
-    tone(buzzerPin, 1000, 500);
-    delay(500);
-    digitalWrite(ledGreenPin, LOW); 
+// Pomocné funkce pro akce
+void beepAndRedLed() {
+  digitalWrite(ledRedPin, HIGH);
+  tone(buzzerPin, SHORT_BEEP_FREQ, SHORT_BEEP_DURATION);
+  delay(RED_LED_DURATION);
+  digitalWrite(ledRedPin, LOW);
 }
+
+void longBeepAndGreenLed() {
+  digitalWrite(ledGreenPin, HIGH);
+  tone(buzzerPin, LONG_BEEP_FREQ, LONG_BEEP_DURATION);
+  delay(GREEN_LED_DURATION);
+  digitalWrite(ledGreenPin, LOW);
+}
+
+void handleSetupState(char key, bool startPressed, bool stopPressed) {
+  if (key != NO_KEY && isdigit(key)) {
+    inputString += key;
+    lcd.setCursor(0, 1);
+    lcd.print("                ");
+    lcd.setCursor(0, 1);
+    lcd.print(inputString);
+  }
+  if (startPressed) {
+    delay(200);
+    if (inputString.length() > 0) {
+      intervalInSeconds = inputString.toInt();
+      inputString = "";
+    }
+    startMillis = millis();
+    lastSecondUpdate = millis();
+    remaining = START_SEQUENCE_SECONDS + 1;
+    timerRunning = true;
+    currentState = STATE_COUNTDOWN;
+    updateDisplay();
+    return;
+  }
+  if (stopPressed) {
+    delay(200);
+    intervalInSeconds += 5;
+    lcd.setCursor(0, 1);
+    lcd.print("                ");
+    lcd.setCursor(0, 1);
+    lcd.print(intervalInSeconds);
+    lcd.print(" s");
+    return;
+  }
+  if (key == '#') {
+    if (inputString.length() > 0) {
+      intervalInSeconds = inputString.toInt();
+      inputString = "";
+      lcd.setCursor(0, 1);
+      lcd.print("                ");
+      lcd.setCursor(0, 1);
+      lcd.print(intervalInSeconds);
+      lcd.print(" s");
+    }
+    return;
+  }
+}
+
+void handlePausedState(bool pausePressed, bool stopPressed) {
+  if (pausePressed) {
+    delay(200);
+    startMillis += (millis() - pauseMillis);
+    currentState = STATE_COUNTDOWN;
+    updateDisplay();
+    return;
+  }
+  if (stopPressed) {
+    delay(200);
+    intervalInSeconds = DEFAULT_INTERVAL;
+    timerRunning = false;
+    currentState = STATE_SETUP;
+    inputString = "";
+    updateDisplay();
+    return;
+  }
+}
+
+void handleCountdownState(bool pausePressed, bool stopPressed) {
+  if (pausePressed) {
+    delay(200);
+    pauseMillis = millis();
+    currentState = STATE_PAUSED;
+    updateDisplay();
+    return;
+  }
+  if (stopPressed) {
+    delay(200);
+    intervalInSeconds = DEFAULT_INTERVAL;
+    timerRunning = false;
+    currentState = STATE_SETUP;
+    inputString = "";
+    updateDisplay();
+    return;
+  }
+  unsigned long now = millis();
+  if (now - lastSecondUpdate >= ONE_SECOND) {
+    lastSecondUpdate = now;
+    remaining--;
+    if (remaining > 0) {
+      updateDisplay();
+      if (remaining <= START_SEQUENCE_SECONDS) {
+        beepAndRedLed();
+      }
+    } else {
+      updateDisplay();
+      longBeepAndGreenLed();
+      startMillis = millis();
+      lastSecondUpdate = millis();
+      remaining = intervalInSeconds;
+      updateDisplay();
+    }
+  }
+}
+
 
 void updateDisplay() {
   if (currentState != lastState) {
-  	lastState = currentState;
+    lastState = currentState;
     lcd.clear();
-  	lcd.setCursor(0, 0);
+    lcd.setCursor(0, 0);
   }
-  
   switch(currentState) {
     case STATE_SETUP:
       lcd.print("Nastav interval");
@@ -254,22 +259,12 @@ void updateDisplay() {
       lcd.print(intervalInSeconds);
       lcd.print(" s");
       break;
-    case STATE_WAITING_TO_START:
-      lcd.print("Pripraveno");
-      lcd.setCursor(0, 1);
-      lcd.print("Start:");
-      lcd.print(intervalInSeconds);
-      lcd.print(" s");
-      break;
     case STATE_COUNTDOWN:
-      //unsigned long elapsed = (millis() - startMillis) / 1000;
-  	  //unsigned long remaining = 10; //intervalInSeconds - elapsed;
-      
       lcd.setCursor(0, 0);
       lcd.print("Odpocet:");
       if (remaining != lastDisplayedRemaining) {
         lcd.setCursor(0, 1);
-        lcd.print("                "); // 16 mezer pro 16 znaků
+        lcd.print("                ");
         lcd.setCursor(0, 1);
         lcd.print(remaining);
         lcd.print(" s");
