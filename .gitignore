@@ -1,0 +1,16 @@
+# Ignorovat soubory generované CLion/CMake a Arduino IDE
+cmake-build-debug/
+CMakeLists.txt
+*.o
+*.elf
+*.hex
+*.bin
+*.d
+*.map
+*.dep
+*.log
+*.pyc
+__pycache__/
+.DS_Store
+.idea/
+
